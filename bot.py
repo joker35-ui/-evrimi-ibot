@@ -5,13 +5,14 @@ import time
 from typing import Dict, Any
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, ChatMemberHandler
 
 typing_state: Dict[int, Dict[str, Any]] = {}
 default_ttl = 30
 default_interval = 4.0
 default_action_key = "yaz"
 start_time = time.time()
+global_continuous = True
 
 ACTIONS = {
     "yaz": ChatAction.TYPING,
@@ -77,6 +78,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     s = ensure_state(chat_id)
     if update.message:
         s["thread_id"] = getattr(update.message, "message_thread_id", None)
+    if global_continuous:
+        s["continuous"] = True
+        await ensure_loop(chat_id, context.application)
     if s.get("auto_on_message", True):
         s["auto_stop_at"] = time.time() + float(s.get("ttl", default_ttl))
         await ensure_loop(chat_id, context.application)
@@ -239,9 +243,53 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/varsayilan_aralik <saniye> – Varsayılan aralık\n"
         "/varsayilan_eylem <yaz|foto|video|ses|belge|sticker> – Varsayılan eylem\n"
         "/test_yaziyor – Bu sohbette tek seferlik eylem gönder\n"
+        "/global_yaziyor_ac – Tüm gruplarda sürekli yazıyor\n"
+        "/global_yaziyor_kapat – Tüm gruplarda kapat\n"
         "/tumunu_dur – Tüm sohbetlerde durdur"
     )
     await update.message.reply_text(text)
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    mc = update.my_chat_member
+    if not mc:
+        return
+    chat = mc.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+    chat_id = chat.id
+    s = ensure_state(chat_id)
+    if global_continuous:
+        s["continuous"] = True
+        s["auto_stop_at"] = time.time() + float(s.get("ttl", default_ttl))
+        await ensure_loop(chat_id, context.application)
+
+async def global_yaziyor_ac(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global global_continuous
+    if not await ensure_admin(update, context):
+        return
+    global_continuous = True
+    for cid, s in typing_state.items():
+        s["continuous"] = True
+        await ensure_loop(cid, context.application)
+    await update.message.reply_text("Global sürekli yazıyor modu açıldı.")
+
+async def global_yaziyor_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global global_continuous
+    if not await ensure_admin(update, context):
+        return
+    global_continuous = False
+    count = 0
+    for cid, s in list(typing_state.items()):
+        t = s.get("task")
+        if t:
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            count += 1
+        s["continuous"] = False
+    await update.message.reply_text(f"Global sürekli yazıyor modu kapatıldı. Durdurulan döngü: {count}")
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("pong")
@@ -293,11 +341,14 @@ def main() -> None:
     app.add_handler(CommandHandler("varsayilan_sure", varsayilan_sure))
     app.add_handler(CommandHandler("varsayilan_aralik", varsayilan_aralik))
     app.add_handler(CommandHandler("varsayilan_eylem", varsayilan_eylem))
+    app.add_handler(CommandHandler("global_yaziyor_ac", global_yaziyor_ac))
+    app.add_handler(CommandHandler("global_yaziyor_kapat", global_yaziyor_kapat))
     app.add_handler(CommandHandler("yardim", yardim))
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("uptime", uptime))
     app.add_handler(CommandHandler("log_seviye", log_seviye))
     app.add_handler(CommandHandler("test_yaziyor", test_yaziyor))
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
     app.run_polling()
 
@@ -350,6 +401,4 @@ async def varsayilan_eylem(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 if __name__ == "__main__":
     main()
-
-
 
