@@ -25,6 +25,15 @@ ACTIONS = {
 def resolve_action(key: str) -> ChatAction:
     return ACTIONS.get(key, ChatAction.TYPING)
 
+async def send_action(app: Application, chat_id: int, action: ChatAction, thread_id: int | None) -> None:
+    try:
+        if thread_id is not None:
+            await app.bot.send_chat_action(chat_id=chat_id, action=action, message_thread_id=thread_id)
+        else:
+            await app.bot.send_chat_action(chat_id=chat_id, action=action)
+    except Exception as e:
+        logging.warning(f"send_action failed chat={chat_id} thread={thread_id}: {e}")
+
 async def typing_loop(chat_id: int, application: Application) -> None:
     while True:
         state = typing_state.get(chat_id)
@@ -41,10 +50,8 @@ async def typing_loop(chat_id: int, application: Application) -> None:
             continue
         action_key = str(state.get("action", default_action_key))
         action = resolve_action(action_key)
-        try:
-            await application.bot.send_chat_action(chat_id=chat_id, action=action)
-        except Exception:
-            pass
+        thread_id = state.get("thread_id")
+        await send_action(application, chat_id, action, thread_id)
         await asyncio.sleep(max(1.0, interval))
     s = typing_state.get(chat_id)
     if s:
@@ -54,7 +61,7 @@ async def typing_loop(chat_id: int, application: Application) -> None:
 def ensure_state(chat_id: int) -> Dict[str, Any]:
     s = typing_state.get(chat_id)
     if not s:
-        s = {"continuous": False, "auto_stop_at": 0.0, "interval": default_interval, "ttl": default_ttl, "auto_on_message": True, "action": default_action_key, "mute_until": 0.0}
+        s = {"continuous": False, "auto_stop_at": 0.0, "interval": default_interval, "ttl": default_ttl, "auto_on_message": True, "action": default_action_key, "mute_until": 0.0, "thread_id": None}
         typing_state[chat_id] = s
     return s
 
@@ -68,6 +75,8 @@ async def ensure_loop(chat_id: int, application: Application) -> None:
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     s = ensure_state(chat_id)
+    if update.message:
+        s["thread_id"] = getattr(update.message, "message_thread_id", None)
     if s.get("auto_on_message", True):
         s["auto_stop_at"] = time.time() + float(s.get("ttl", default_ttl))
         await ensure_loop(chat_id, context.application)
@@ -80,6 +89,8 @@ async def yaziyor_ac(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await ensure_admin(update, context):
         return
     s = ensure_state(chat_id)
+    if update.message:
+        s["thread_id"] = getattr(update.message, "message_thread_id", None)
     s["continuous"] = True
     s["auto_stop_at"] = time.time() + float(s.get("ttl", default_ttl))
     await ensure_loop(chat_id, context.application)
@@ -90,6 +101,8 @@ async def yaziyor_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not await ensure_admin(update, context):
         return
     s = ensure_state(chat_id)
+    if update.message:
+        s["thread_id"] = getattr(update.message, "message_thread_id", None)
     s["continuous"] = False
     s["auto_stop_at"] = time.time()
     await update.message.reply_text("Bu sohbette yazıyor modu kapatıldı.")
@@ -225,6 +238,7 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/varsayilan_sure <saniye> – Varsayılan süre\n"
         "/varsayilan_aralik <saniye> – Varsayılan aralık\n"
         "/varsayilan_eylem <yaz|foto|video|ses|belge|sticker> – Varsayılan eylem\n"
+        "/test_yaziyor – Bu sohbette tek seferlik eylem gönder\n"
         "/tumunu_dur – Tüm sohbetlerde durdur"
     )
     await update.message.reply_text(text)
@@ -247,9 +261,19 @@ async def log_seviye(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     logging.getLogger().setLevel(lvl)
     await update.message.reply_text(f"Log seviyesi {level} olarak ayarlandı.")
 
+async def test_yaziyor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    s = ensure_state(chat_id)
+    if update.message:
+        s["thread_id"] = getattr(update.message, "message_thread_id", None)
+    action_key = str(s.get("action", default_action_key))
+    action = resolve_action(action_key)
+    await send_action(context.application, chat_id, action, s.get("thread_id"))
+    await update.message.reply_text("Tek seferlik eylem gönderildi.")
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    token = os.environ.get("TELEGRAM_BOT_TOKEN","8416184601:AAG6gXERn4D1VGpIkZAh1lmehv19aBLP_KU")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "8416184601:AAG6gXERn4D1VGpIkZAh1lmehv19aBLP_KU")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN ortam değişkenini ayarlayın.")
     app = Application.builder().token(token).build()
@@ -273,6 +297,7 @@ def main() -> None:
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("uptime", uptime))
     app.add_handler(CommandHandler("log_seviye", log_seviye))
+    app.add_handler(CommandHandler("test_yaziyor", test_yaziyor))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
     app.run_polling()
 
@@ -325,4 +350,6 @@ async def varsayilan_eylem(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 if __name__ == "__main__":
     main()
+
+
 
