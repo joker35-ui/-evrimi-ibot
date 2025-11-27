@@ -249,7 +249,7 @@ async def log_seviye(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "8416184601:AAG6gXERn4D1VGpIkZAh1lmehv19aBLP_KU")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN","8416184601:AAG6gXERn4D1VGpIkZAh1lmehv19aBLP_KU")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN ortam değişkenini ayarlayın.")
     app = Application.builder().token(token).build()
@@ -275,9 +275,6 @@ def main() -> None:
     app.add_handler(CommandHandler("log_seviye", log_seviye))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
 
 async def ensure_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat = update.effective_chat
@@ -326,7 +323,6 @@ async def varsayilan_eylem(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     default_action_key = key
     await update.message.reply_text(f"Varsayılan eylem '{default_action_key}' olarak ayarlandı.")
 
-
-
-
+if __name__ == "__main__":
+    main()
 
