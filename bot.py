@@ -2,6 +2,8 @@ import os
 import asyncio
 import logging
 import time
+import json
+from pathlib import Path
 from typing import Dict, Any
 from telegram import Update
 from telegram.constants import ChatAction
@@ -13,6 +15,8 @@ default_interval = 4.0
 default_action_key = "yaz"
 start_time = time.time()
 global_continuous = True
+GROUPS_FILE = "groups.json"
+groups_cache: Dict[int, Dict[str, Any]] = {}
 
 ACTIONS = {
     "yaz": ChatAction.TYPING,
@@ -62,7 +66,17 @@ async def typing_loop(chat_id: int, application: Application) -> None:
 def ensure_state(chat_id: int) -> Dict[str, Any]:
     s = typing_state.get(chat_id)
     if not s:
-        s = {"continuous": False, "auto_stop_at": 0.0, "interval": default_interval, "ttl": default_ttl, "auto_on_message": True, "action": default_action_key, "mute_until": 0.0, "thread_id": None}
+        base = groups_cache.get(chat_id) or {}
+        s = {
+            "continuous": bool(base.get("continuous", False)),
+            "auto_stop_at": 0.0,
+            "interval": float(base.get("interval", default_interval)),
+            "ttl": int(base.get("ttl", default_ttl)),
+            "auto_on_message": bool(base.get("auto_on_message", True)),
+            "action": str(base.get("action", default_action_key)),
+            "mute_until": 0.0,
+            "thread_id": base.get("thread_id", None),
+        }
         typing_state[chat_id] = s
     return s
 
@@ -245,6 +259,9 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/test_yaziyor – Bu sohbette tek seferlik eylem gönder\n"
         "/global_yaziyor_ac – Tüm gruplarda sürekli yazıyor\n"
         "/global_yaziyor_kapat – Tüm gruplarda kapat\n"
+        "/grup_ekle – Bu grubu kalıcı listeye ekle\n"
+        "/grup_sil – Bu grubu kalıcı listeden sil\n"
+        "/konuyu_ayarla <id> – Forum konusu id ayarla\n"
         "/tumunu_dur – Tüm sohbetlerde durdur"
     )
     await update.message.reply_text(text)
@@ -258,6 +275,15 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     chat_id = chat.id
     s = ensure_state(chat_id)
+    groups_cache[chat_id] = {
+        "continuous": True,
+        "interval": s.get("interval", default_interval),
+        "ttl": s.get("ttl", default_ttl),
+        "auto_on_message": s.get("auto_on_message", True),
+        "action": s.get("action", default_action_key),
+        "thread_id": s.get("thread_id", None),
+    }
+    save_groups()
     if global_continuous:
         s["continuous"] = True
         s["auto_stop_at"] = time.time() + float(s.get("ttl", default_ttl))
@@ -290,6 +316,66 @@ async def global_yaziyor_kapat(update: Update, context: ContextTypes.DEFAULT_TYP
             count += 1
         s["continuous"] = False
     await update.message.reply_text(f"Global sürekli yazıyor modu kapatıldı. Durdurulan döngü: {count}")
+
+async def grup_ekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not await ensure_admin(update, context):
+        return
+    chat_id = chat.id
+    s = ensure_state(chat_id)
+    if update.message:
+        s["thread_id"] = getattr(update.message, "message_thread_id", None)
+    groups_cache[chat_id] = {
+        "continuous": True,
+        "interval": s.get("interval", default_interval),
+        "ttl": s.get("ttl", default_ttl),
+        "auto_on_message": s.get("auto_on_message", True),
+        "action": s.get("action", default_action_key),
+        "thread_id": s.get("thread_id", None),
+    }
+    save_groups()
+    s["continuous"] = True
+    await ensure_loop(chat_id, context.application)
+    await update.message.reply_text("Bu grup kalıcı listeye eklendi ve sürekli mod açıldı.")
+
+async def grup_sil(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not await ensure_admin(update, context):
+        return
+    chat_id = chat.id
+    s = typing_state.get(chat_id)
+    if s:
+        t = s.get("task")
+        if t:
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        typing_state.pop(chat_id, None)
+    if chat_id in groups_cache:
+        groups_cache.pop(chat_id, None)
+        save_groups()
+    await update.message.reply_text("Bu grup kalıcı listeden silindi ve durduruldu.")
+
+async def konuyu_ayarla(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not await ensure_admin(update, context):
+        return
+    chat_id = chat.id
+    s = ensure_state(chat_id)
+    try:
+        tid = int(context.args[0]) if context.args else None
+    except Exception:
+        tid = None
+    if tid is None:
+        await update.message.reply_text("Konu id eksik. Kullanım: /konuyu_ayarla <id>")
+        return
+    s["thread_id"] = tid
+    groups_cache[chat_id] = groups_cache.get(chat_id, {})
+    groups_cache[chat_id]["thread_id"] = tid
+    save_groups()
+    await update.message.reply_text(f"Bu sohbette varsayılan konu id {tid} olarak ayarlandı.")
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("pong")
@@ -325,6 +411,18 @@ def main() -> None:
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN ortam değişkenini ayarlayın.")
     app = Application.builder().token(token).build()
+    load_groups()
+    for cid, cfg in list(groups_cache.items()):
+        s = ensure_state(cid)
+        s.update({
+            "continuous": True,
+            "interval": float(cfg.get("interval", default_interval)),
+            "ttl": int(cfg.get("ttl", default_ttl)),
+            "auto_on_message": bool(cfg.get("auto_on_message", True)),
+            "action": str(cfg.get("action", default_action_key)),
+            "thread_id": cfg.get("thread_id", None),
+        })
+        asyncio.get_event_loop().create_task(typing_loop(cid, app))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("yaziyor_ac", yaziyor_ac))
     app.add_handler(CommandHandler("yaziyor_kapat", yaziyor_kapat))
@@ -343,6 +441,9 @@ def main() -> None:
     app.add_handler(CommandHandler("varsayilan_eylem", varsayilan_eylem))
     app.add_handler(CommandHandler("global_yaziyor_ac", global_yaziyor_ac))
     app.add_handler(CommandHandler("global_yaziyor_kapat", global_yaziyor_kapat))
+    app.add_handler(CommandHandler("grup_ekle", grup_ekle))
+    app.add_handler(CommandHandler("grup_sil", grup_sil))
+    app.add_handler(CommandHandler("konuyu_ayarla", konuyu_ayarla))
     app.add_handler(CommandHandler("yardim", yardim))
     app.add_handler(CommandHandler("ping", ping))
     app.add_handler(CommandHandler("uptime", uptime))
@@ -399,6 +500,29 @@ async def varsayilan_eylem(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     default_action_key = key
     await update.message.reply_text(f"Varsayılan eylem '{default_action_key}' olarak ayarlandı.")
 
+def load_groups() -> None:
+    p = Path(GROUPS_FILE)
+    if not p.exists():
+        return
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            for k, v in data.items():
+                try:
+                    groups_cache[int(k)] = v
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def save_groups() -> None:
+    p = Path(GROUPS_FILE)
+    try:
+        p.write_text(json.dumps(groups_cache, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
 if __name__ == "__main__":
     main()
+
 
