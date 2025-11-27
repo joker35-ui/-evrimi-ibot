@@ -315,6 +315,18 @@ async def varsayilan_aralik(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     default_interval = max(1.0, val)
     await update.message.reply_text(f"Varsayılan yazıyor aralığı {default_interval} saniye olarak ayarlandı.")
 
+async def varsayilan_eylem(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_admin(update, context):
+        return
+    global default_action_key
+    key = (context.args[0].lower() if context.args else default_action_key)
+    if key not in ACTIONS:
+        await update.message.reply_text("Geçersiz eylem. Kullanım: /varsayilan_eylem yaz|foto|video|ses|belge|sticker")
+        return
+    default_action_key = key
+    await update.message.reply_text(f"Varsayılan eylem '{default_action_key}' olarak ayarlandı.")
+
+
 
 
 
