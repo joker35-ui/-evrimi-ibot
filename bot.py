@@ -71,7 +71,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN","8416184601:AAG6gXERn4D1VGpIkZAh1lmehv19aBLP_KU")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN ortam değişkenini ayarlayın.")
     app = Application.builder().token(token).build()
@@ -85,4 +85,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
